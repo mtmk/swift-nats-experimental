@@ -7,9 +7,14 @@ public class NatsClient {
     private var bootstrap: ClientBootstrap?
     private let handler = NatsHandler()
     private var channel: Channel?
+    private let batchSize: Int
+    private var batchBuffer: [Data]
+    private let batchLock = NIOLock()
 
     public init(eventLoopGroup: EventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)) {
         self.group = eventLoopGroup
+        self.batchSize = 100
+        self.batchBuffer = []
     }
 
     public func connect(host: String, port: Int) async throws {
@@ -41,6 +46,36 @@ public class NatsClient {
         self.channel = channel
     }
 
+    func send(_ data: Data) {
+        batchLock.withLock {
+            batchBuffer.append(data)
+            
+            if batchBuffer.count >= batchSize {
+                flushBatch()
+            }
+        }
+    }
+    
+    func flushBatch() {
+        batchLock.withLock {
+            guard let channel = channel, !batchBuffer.isEmpty else {
+                return
+            }
+            
+            var mergedData = Data()
+            for data in batchBuffer {
+                mergedData.append(data)
+                mergedData.append(contentsOf: "\r\n".data(using: .utf8)!)
+            }
+            batchBuffer.removeAll()
+            
+            var buffer = channel.allocator.buffer(capacity: mergedData.count)
+            buffer.writeBytes(mergedData)
+            
+            channel.writeAndFlush(buffer, promise: nil)
+        }
+    }
+    
     public func send(_ message: Data) async throws {
         guard let channel = channel else {
             throw NatsClientError.notConnected
