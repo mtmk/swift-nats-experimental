@@ -7,14 +7,10 @@ public class NatsClient {
     private var bootstrap: ClientBootstrap?
     private let handler = NatsHandler()
     private var channel: Channel?
-    private let batchSize: Int
-    private var batchBuffer: [Data]
-    private let batchLock = NIOLock()
+    private var batchBuffer: BatchBuffer?
 
     public init(eventLoopGroup: EventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)) {
         self.group = eventLoopGroup
-        self.batchSize = 100
-        self.batchBuffer = []
     }
 
     public func connect(host: String, port: Int) async throws {
@@ -44,47 +40,17 @@ public class NatsClient {
             }
         }
         self.channel = channel
+        self.batchBuffer = BatchBuffer(channel: channel)
     }
 
-    func send(_ data: Data) {
-        batchLock.withLock {
-            batchBuffer.append(data)
-            
-            if batchBuffer.count >= batchSize {
-                flushBatch()
-            }
-        }
-    }
-    
-    func flushBatch() {
-        batchLock.withLock {
-            guard let channel = channel, !batchBuffer.isEmpty else {
-                return
-            }
-            
-            var mergedData = Data()
-            for data in batchBuffer {
-                mergedData.append(data)
-                mergedData.append(contentsOf: "\r\n".data(using: .utf8)!)
-            }
-            batchBuffer.removeAll()
-            
-            var buffer = channel.allocator.buffer(capacity: mergedData.count)
-            buffer.writeBytes(mergedData)
-            
-            channel.writeAndFlush(buffer, promise: nil)
-        }
-    }
-    
-    public func send(_ message: Data) async throws {
-        guard let channel = channel else {
+    public func send(_ data: Data) async throws {
+        guard let buffer = self.batchBuffer else {
             throw NatsClientError.notConnected
         }
-        var buffer = channel.allocator.buffer(capacity: message.count)
-        buffer.writeBytes(message)
-        try await channel.writeAndFlush(buffer).get()
+        
+        try await buffer.write(data: data)
     }
-
+    
     public func ping() async throws -> Duration {
         let ping = PingCommand.makeFrom(channel: self.channel)
         self.handler.pingQueue.enqueue(ping)
@@ -113,7 +79,7 @@ class NatsHandler: ChannelInboundHandler {
     let pingQueue = ConcurrentQueue<PingCommand>()
 
     func channelActive(context: ChannelHandlerContext) {
-        print("Connected to NATS server")
+        //print("Connected to NATS server")
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -134,8 +100,8 @@ class NatsHandler: ChannelInboundHandler {
     }
 
     private func handleInfo(_ context: ChannelHandlerContext, _ message: String) {
-        print("Received INFO message:")
-        print(message)
+        //print("Received INFO message:")
+        //print(message)
         // Parse and handle the INFO message as needed
         if let data = self.data {
             data.continuation.resume(returning: context.channel)
@@ -143,13 +109,13 @@ class NatsHandler: ChannelInboundHandler {
     }
 
     private func handlePing(context: ChannelHandlerContext) {
-        print("Received PING message")
+        //print("Received PING message")
         // Respond with a PONG message
         sendPong(context: context)
     }
     
     private func handlePong(context: ChannelHandlerContext) {
-        print("Received PONG message")
+        //print("Received PONG message")
         self.pingQueue.dequeue()?.setRoundTripTime()
     }
 
