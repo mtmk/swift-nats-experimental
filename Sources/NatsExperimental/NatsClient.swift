@@ -9,7 +9,7 @@ public class NatsClient {
     private var channel: Channel?
     private var batchBuffer: BatchBuffer?
 
-    public init(eventLoopGroup: EventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)) {
+    public init(eventLoopGroup: EventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 4)) {
         self.group = eventLoopGroup
     }
 
@@ -37,6 +37,7 @@ public class NatsClient {
             }
             futureConnection.whenFailure { error in
                 continuation.resume(throwing: error)
+
             }
         }
         self.channel = channel
@@ -100,8 +101,6 @@ class NatsHandler: ChannelInboundHandler {
     }
 
     private func handleInfo(_ context: ChannelHandlerContext, _ message: String) {
-        //print("Received INFO message:")
-        //print(message)
         // Parse and handle the INFO message as needed
         if let data = self.data {
             data.continuation.resume(returning: context.channel)
@@ -109,13 +108,11 @@ class NatsHandler: ChannelInboundHandler {
     }
 
     private func handlePing(context: ChannelHandlerContext) {
-        //print("Received PING message")
         // Respond with a PONG message
         sendPong(context: context)
     }
     
     private func handlePong(context: ChannelHandlerContext) {
-        //print("Received PONG message")
         self.pingQueue.dequeue()?.setRoundTripTime()
     }
 

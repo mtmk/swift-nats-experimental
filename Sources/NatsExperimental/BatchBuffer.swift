@@ -16,29 +16,21 @@ class BatchBuffer {
         self.channel = channel
     }
     
-    var eventLoop: EventLoop {
-        self.channel.eventLoop
-    }
-    
     func write(data: Data) async throws {
-
-        // This is direct write without batching. Uncomment this bit
-        // and comment out rest of the function to write and flush without batching
-        //
-        // var writeBuffer = self.channel.allocator.buffer(capacity: data.count)
-        // writeBuffer.writeBytes(data)
-        // try await channel.writeAndFlush(writeBuffer).get()
-        //
-        
-        // Batch writes and yield the thread until buffer is flushed
-        // when we have more than the batch size already in the buffer
+        // Batch writes and if we have more than the batch size
+        // already in the buffer await until buffer is flushed
+        // to handle any back pressure
         try await withCheckedThrowingContinuation { continuation in
-            lock.withLock {
+            self.lock.withLock {
                 guard self.buffer.readableBytes < self.batchSize else {
-                    let promise = eventLoop.makePromise(of: Void.self)
+                    let promise = self.channel.eventLoop.makePromise(of: Void.self)
                     promise.futureResult.whenComplete { result in
                         switch result {
                         case .success:
+                            _ = self.lock.withLock {
+                                self.buffer.writeBytes(data)
+                            }
+                            self.flushWhenIdle()
                             continuation.resume()
                         case .failure(let error):
                             continuation.resume(throwing: error)
@@ -47,38 +39,36 @@ class BatchBuffer {
                     waitingPromises.append(promise)
                     return
                 }
-                
-                buffer.writeBytes(data)
 
+                self.buffer.writeBytes(data)
                 continuation.resume()
             }
-
-            flush()
+            
+            flushWhenIdle()
         }
     }
     
     func clear() {
         lock.withLock {
-            buffer.clear()
+            self.buffer.clear()
         }
     }
     
-    func flush() {
-        eventLoop.execute {
+    private func flushWhenIdle() {
+        Task.detached {
             
-            // We have to use lock/unlock calls rather than the withLock
-            // since we need writeBuffer reference
             self.lock.lock()
 
-            // The idea is to keep writing to the buffer while a writeAndFlush() is
-            // in progress, so we can batch as many messages as possible.
+            // The idea is to keep writing to the buffer while a
+            // writeAndFlush() is in progress, so we can batch as
+            // many messages as possible.
             guard !self.isWriteInProgress else {
                 self.lock.unlock()
                 return
             }
             
-            // We need a separate write buffer so we can free the message buffer for more
-            // messages to be collected.
+            // We need a separate write buffer so we can free the
+            // message buffer for more messages to be collected.
             guard let writeBuffer = self.getWriteBuffer() else {
                 self.lock.unlock()
                 return
@@ -88,38 +78,37 @@ class BatchBuffer {
             
             self.lock.unlock()
             
-            let writePromise = self.channel.eventLoop.makePromise(of: Void.self)
-            writePromise.futureResult.whenComplete { result in
+            do {
+                try await self.channel.writeAndFlush(writeBuffer)
+                
                 self.lock.withLock {
                     self.isWriteInProgress = false
-                    switch result {
-                    case .success:
-                        self.waitingPromises.forEach { $0.succeed(()) }
-                        self.waitingPromises.removeAll()
-                    case .failure(let error):
-                        self.waitingPromises.forEach { $0.fail(error) }
-                        self.waitingPromises.removeAll()
-                    }
+                    self.waitingPromises.forEach { $0.succeed(()) }
+                    self.waitingPromises.removeAll()
                     
                     // Check if there are any pending flushes
                     if self.buffer.readableBytes > 0 {
-                        self.flush()
+                        self.flushWhenIdle()
                     }
                 }
+            } catch {
+                self.lock.withLock {
+                    self.isWriteInProgress = false
+                    self.waitingPromises.forEach { $0.fail(error) }
+                    self.waitingPromises.removeAll()
+                }
             }
-
-            self.channel.writeAndFlush(writeBuffer, promise: writePromise)
         }
     }
     
     private func getWriteBuffer() -> ByteBuffer? {
-        guard self.buffer.readableBytes > 0 else {
+        guard buffer.readableBytes > 0 else {
             return nil
         }
         
-        var writeBuffer = self.channel.allocator.buffer(capacity: self.buffer.readableBytes)
-        writeBuffer.writeBytes(self.buffer.readableBytesView)
-        self.buffer.clear()
+        var writeBuffer = channel.allocator.buffer(capacity: buffer.readableBytes)
+        writeBuffer.writeBytes(buffer.readableBytesView)
+        buffer.clear()
 
         return writeBuffer
     }

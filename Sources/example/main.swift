@@ -12,8 +12,8 @@ import NIO
 print("Starting...")
 
 let client = NatsClient()
-
-try await client.connect(host: "127.0.0.1", port: 4222)
+let host = ProcessInfo.processInfo.environment["NATS_URL"] ?? "127.0.0.1";
+try await client.connect(host: host, port: 4222)
 print("Connected to server")
 
 try await client.send("CONNECT {\"verbose\":false}\r\n".data(using: .utf8)!)
@@ -28,6 +28,7 @@ for _ in 1...100_000 {
     try await client.send(data)
 }
 
+print("ping flush...")
 let rtt2 = try await client.ping()
 print("done. rtt=\(rtt2)")
 
