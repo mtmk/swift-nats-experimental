@@ -49,7 +49,7 @@ public class NatsClient {
             throw NatsClientError.notConnected
         }
         
-        try await buffer.write(data: data)
+        try await buffer.write(data)
     }
     
     public func ping() async throws -> Duration {
